@@ -1,0 +1,25 @@
+[package]
+name = "auto-trait"
+version = "1.0.0"
+authors = ["Douman <douman@gmx.se>"]
+description = "Simple macro to generate trait implementation for wrapper types"
+readme = "README.md"
+repository = "https://github.com/DoumanAsh/auto-trait"
+documentation = "https://docs.rs/auto-trait/"
+license = "BSL-1.0"
+include = [
+    "**/*.rs",
+    "Cargo.toml",
+    "README.md"
+]
+edition = "2018"
+
+[lib]
+proc-macro = true
+
+[dependencies.quote]
+version = "1"
+
+[dependencies.syn]
+version = "1"
+features = ["full", "extra-traits"]
