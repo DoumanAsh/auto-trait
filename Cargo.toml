@@ -1,6 +1,6 @@
 [package]
 name = "auto-trait"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Douman <douman@gmx.se>"]
 description = "Simple macro to generate trait implementation for wrapper types"
 readme = "README.md"

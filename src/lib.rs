@@ -255,6 +255,5 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
     };
     result.extend(impls.drain(..));
 
-    println!("result={}", result);
     result.into()
 }
