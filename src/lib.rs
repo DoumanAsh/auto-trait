@@ -1,3 +1,7 @@
+//!Automatic trait extension macro for wrapper types
+#![warn(missing_docs)]
+#![cfg_attr(feature = "cargo-clippy", allow(clippy::style))]
+
 use proc_macro::TokenStream;
 
 use quote::quote;
@@ -170,10 +174,8 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
                         }
                     }
 
-                    if deref_type.is_none() {
-                        if result.args.len() == 1 {
-                            result.args.last_mut();
-                        }
+                    if deref_type.is_none() && result.args.len() == 1 {
+                        result.args.last_mut();
                     }
 
                     Some(result)
