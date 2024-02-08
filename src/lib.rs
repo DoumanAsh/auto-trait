@@ -111,8 +111,8 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
     for idx in 0..input.attrs.len() {
         let attr = &input.attrs[idx];
 
-        if attr.path.is_ident("auto_trait") {
-            match syn::parse2(attr.tokens.clone()) {
+        if attr.path().is_ident("auto_trait") {
+            match attr.parse_args() {
                 Ok(arg) => match arg {
                     syn::Type::Paren(arg) => args.push(*arg.elem),
                     arg => args.push(arg),
@@ -193,7 +193,7 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
 
         for item in input.items.iter() {
             match item {
-                syn::TraitItem::Method(ref method) => {
+                syn::TraitItem::Fn(ref method) => {
                     let method_name = method.sig.ident.clone();
                     let mut method_args = Vec::new();
                     for arg in method.sig.inputs.iter() {
