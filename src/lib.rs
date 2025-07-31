@@ -1,10 +1,115 @@
 //!Automatic trait extension macro for wrapper types
 #![warn(missing_docs)]
-#![cfg_attr(feature = "cargo-clippy", allow(clippy::style))]
+#![allow(clippy::style)]
 
 use proc_macro::TokenStream;
 
 use quote::quote;
+
+struct TypeInfo {
+    ident: syn::Ident,
+    generics: Option<syn::AngleBracketedGenericArguments>,
+    reference: Option<syn::Lifetime>,
+    mutability: Option<syn::token::Mut>
+}
+
+fn generate_self_trait_bound(generic_name: syn::Ident, trait_name: &syn::Ident) -> syn::GenericArgument {
+    let mut segments = syn::punctuated::Punctuated::new();
+    segments.push(syn::PathSegment {
+        ident: trait_name.clone(),
+        arguments: syn::PathArguments::None,
+    });
+
+    let mut bounds = syn::punctuated::Punctuated::new();
+    bounds.push(syn::TypeParamBound::Trait(syn::TraitBound {
+        paren_token: None,
+        modifier: syn::TraitBoundModifier::None,
+        lifetimes: None,
+        path: syn::Path {
+            leading_colon: None,
+            segments
+        }
+    }));
+    syn::GenericArgument::Constraint(syn::Constraint {
+        ident: generic_name,
+        generics: None,
+        colon_token: syn::Token![:](proc_macro2::Span::call_site()),
+        bounds
+    })
+}
+
+fn extract_type(typ: &mut syn::Type, trait_name: &syn::Ident, deref_type: &mut Option<syn::Ident>) -> Result<TypeInfo, TokenStream> {
+    match typ {
+        syn::Type::Path(ref mut typ) => {
+            let ident = match typ.path.segments.first() {
+                Some(path) => path.ident.clone(),
+                None => return Err(syn::Error::new_spanned(typ, "Type has no path segments").to_compile_error().into()),
+            };
+
+            match typ.path.segments.last_mut().expect("To have at least on type path segment").arguments {
+                syn::PathArguments::AngleBracketed(ref mut args) => {
+                    let result = args.clone();
+
+                    for arg in args.args.iter_mut() {
+                        if let syn::GenericArgument::Constraint(constraint) = arg {
+
+                            for param in constraint.bounds.iter() {
+                                if let syn::TypeParamBound::Trait(bound) = param {
+                                    if bound.path.is_ident(trait_name) {
+                                        if let Some(ident) = deref_type.replace(constraint.ident.clone()) {
+                                            return Err(syn::Error::new_spanned(ident, "Multiple bounds to trait, can be problematic so how about no?").to_compile_error().into());
+                                        }
+                                    }
+                                }
+                            }
+
+                            let mut segments = syn::punctuated::Punctuated::new();
+                            segments.push(syn::PathSegment {
+                                ident: constraint.ident.clone(),
+                                arguments: syn::PathArguments::None
+                            });
+
+                            *arg = syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+                                qself: None,
+                                path: syn::Path {
+                                    leading_colon: None,
+                                    segments
+                                },
+                            }));
+                        }
+                    }
+
+                    //if deref_type.is_none() && result.args.len() == 1 {
+                    //    result.args.last_mut();
+                    //}
+
+                    Ok(TypeInfo {
+                        ident,
+                        generics: Some(result),
+                        reference: None,
+                        mutability: None,
+                    })
+                },
+                syn::PathArguments::None => Ok(TypeInfo {
+                    ident,
+                    generics: None,
+                    reference: None,
+                    mutability: None,
+                }),
+                syn::PathArguments::Parenthesized(ref args) => Err(syn::Error::new_spanned(args, "Unsupported type arguments").to_compile_error().into()),
+            }
+        },
+        syn::Type::Reference(reference) => match extract_type(&mut reference.elem, trait_name, deref_type) {
+            Ok(mut result) => {
+                result.mutability = reference.mutability;
+                result.reference = reference.lifetime.clone();
+                Ok(result)
+            },
+            Err(error) => Err(error),
+        }
+        other => Err(syn::Error::new_spanned(other, "Unsupported type").to_compile_error().into()),
+    }
+}
 
 ///Generates trait implementation for specified type, relying on `Deref` or `Into` depending on
 ///whether `self` is reference or owned
@@ -45,6 +150,7 @@ use quote::quote;
 ///
 ///#[auto_trait(Box<T: Lolka2>)]
 ///#[auto_trait(Wrapper)]
+///#[auto_trait(&'a mut R)]
 ///pub trait Lolka2 {
 ///   fn lolka2_ref(&self) -> u32;
 ///   fn lolka2_mut(&mut self) -> u32;
@@ -98,6 +204,9 @@ use quote::quote;
 ///
 ///assert_eq!(lolka.lolka2_ref(), wrapped.lolka2_ref());
 ///assert_eq!(lolka.lolka2_mut(), wrapped.lolka2_mut());
+///
+///assert_eq!(lolka.lolka2_ref(), (&mut lolka).lolka2_ref());
+///assert_eq!(lolka.lolka2_mut(), (&mut lolka).lolka2_mut());
 ///```
 #[proc_macro_attribute]
 pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
@@ -110,11 +219,10 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let mut args = vec![args];
-    let mut attrs_to_remove = Vec::new();
 
-    for idx in 0..input.attrs.len() {
-        let attr = &input.attrs[idx];
-
+    //We need to remove attributes that we're going to parse
+    let mut remaining_attrs = Vec::new();
+    for attr in input.attrs.drain(..) {
         if attr.path().is_ident("auto_trait") {
             match attr.parse_args() {
                 Ok(arg) => match arg {
@@ -125,68 +233,20 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
                     return syn::Error::new(error.span(), "Argument is required and must be a type").to_compile_error().into()
                 }
             }
-
-            attrs_to_remove.push(idx);
+        } else {
+            remaining_attrs.push(attr)
         }
     }
-
-    //We need to remove attributes that we're going to parse
-    for idx in attrs_to_remove {
-        input.attrs.swap_remove(idx);
-    }
+    input.attrs = remaining_attrs;
 
     let mut impls = Vec::new();
 
     for mut args in args.drain(..) {
         let trait_name = input.ident.clone();
         let mut deref_type = None;
-        let type_generics = match args {
-            syn::Type::Path(ref mut typ) => match typ.path.segments.last_mut().expect("To have at least on type path segment").arguments {
-                syn::PathArguments::AngleBracketed(ref mut args) => {
-                    let mut result = args.clone();
-
-                    for arg in args.args.iter_mut() {
-                        if let syn::GenericArgument::Constraint(constraint) = arg {
-
-                            for param in constraint.bounds.iter() {
-                                if let syn::TypeParamBound::Trait(bound) = param {
-                                    if bound.path.is_ident(&trait_name) {
-                                        if let Some(ident) = deref_type.replace(constraint.ident.clone()) {
-                                            return syn::Error::new_spanned(ident, "Multiple bounds to trait, can be problematic so how about no?").to_compile_error().into();
-                                        }
-                                    }
-                                }
-                            }
-
-                            let mut segments = syn::punctuated::Punctuated::new();
-                            segments.push(syn::PathSegment {
-                                ident: constraint.ident.clone(),
-                                arguments: syn::PathArguments::None
-                            });
-
-                            *arg = syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
-                                qself: None,
-                                path: syn::Path {
-                                    leading_colon: None,
-                                    segments
-                                },
-                            }));
-                        }
-                    }
-
-                    if deref_type.is_none() && result.args.len() == 1 {
-                        result.args.last_mut();
-                    }
-
-                    Some(result)
-                },
-                syn::PathArguments::None => None,
-                syn::PathArguments::Parenthesized(ref args) => return syn::Error::new_spanned(args, "Unsupported type arguments").to_compile_error().into(),
-            },
-            other => {
-                println!("other={:?}", other);
-                return syn::Error::new_spanned(other, "Unsupported type").to_compile_error().into();
-            },
+        let type_info = match extract_type(&mut args, &trait_name, &mut deref_type) {
+            Ok(type_info) => type_info,
+            Err(error) => return error,
         };
 
         let deref_name = deref_type.unwrap_or_else(|| trait_name.clone());
@@ -203,13 +263,25 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
                             syn::FnArg::Receiver(arg) => {
                                 if arg.reference.is_some() {
                                     if arg.mutability.is_some() {
-                                        method_args.push(quote! {
-                                            core::ops::DerefMut::deref_mut(self)
-                                        })
+                                        if type_info.reference.is_some() {
+                                            method_args.push(quote! {
+                                                &mut **self
+                                            })
+                                        } else {
+                                            method_args.push(quote! {
+                                                core::ops::DerefMut::deref_mut(self)
+                                            })
+                                        }
                                     } else {
-                                        method_args.push(quote! {
-                                            core::ops::Deref::deref(self)
-                                        })
+                                        if type_info.reference.is_some() {
+                                            method_args.push(quote! {
+                                                &**self
+                                            })
+                                        } else {
+                                            method_args.push(quote! {
+                                                core::ops::Deref::deref(self)
+                                            })
+                                        }
                                     }
                                 } else {
                                     method_args.push(quote! {
@@ -242,6 +314,35 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
 
             }
         }
+
+        let type_generics = if let Some(lifetime) = type_info.reference {
+            match type_info.generics {
+                Some(mut generics) => {
+                    let mut new_args = syn::punctuated::Punctuated::new();
+                    new_args.insert(0, generate_self_trait_bound(type_info.ident, &trait_name));
+                    new_args.insert(0, syn::GenericArgument::Lifetime(lifetime));
+                    while let Some(arg) = generics.args.pop() {
+                        new_args.push(arg.into_tuple().0);
+                    }
+                    generics.args = new_args;
+                    Some(generics)
+                },
+                None => {
+                    let mut args = syn::punctuated::Punctuated::new();
+                    args.push(syn::GenericArgument::Lifetime(lifetime));
+                    args.push(generate_self_trait_bound(type_info.ident, &trait_name));
+
+                    Some(syn::AngleBracketedGenericArguments {
+                        colon2_token: None,
+                        lt_token: syn::Token![<](proc_macro2::Span::call_site()),
+                        args,
+                        gt_token: syn::Token![>](proc_macro2::Span::call_site()),
+                    })
+                }
+            }
+        } else {
+            type_info.generics
+        };
 
         impls.push(quote! {
             impl#type_generics #trait_name for #args {
