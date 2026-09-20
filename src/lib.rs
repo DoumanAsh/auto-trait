@@ -23,12 +23,13 @@ fn generate_self_trait_bound(generic_name: syn::Ident, trait_name: &syn::Ident) 
     let mut bounds = syn::punctuated::Punctuated::new();
     bounds.push(syn::TypeParamBound::Trait(syn::TraitBound {
         paren_token: None,
-        modifier: syn::TraitBoundModifier::None,
+        modifiers: Default::default(),
         lifetimes: None,
+        maybe: None,
         path: syn::Path {
             leading_colon: None,
             segments
-        }
+        },
     }));
     syn::GenericArgument::Constraint(syn::Constraint {
         ident: generic_name,
@@ -49,9 +50,7 @@ fn extract_type(typ: &mut syn::Type, trait_name: &syn::Ident, deref_type: &mut O
             match typ.path.segments.last_mut().expect("To have at least on type path segment").arguments {
                 syn::PathArguments::AngleBracketed(ref mut args) => {
                     let result = args.clone();
-
-                    for arg in args.args.iter_mut() {
-                        if let syn::GenericArgument::Constraint(constraint) = arg {
+for arg in args.args.iter_mut() { if let syn::GenericArgument::Constraint(constraint) = arg {
 
                             for param in constraint.bounds.iter() {
                                 if let syn::TypeParamBound::Trait(bound) = param {
@@ -70,6 +69,7 @@ fn extract_type(typ: &mut syn::Type, trait_name: &syn::Ident, deref_type: &mut O
                             });
 
                             *arg = syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+                                attrs: Vec::new(),
                                 qself: None,
                                 path: syn::Path {
                                     leading_colon: None,
@@ -260,9 +260,19 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
                     let mut method_args = Vec::new();
                     for arg in method.sig.inputs.iter() {
                         match arg {
-                            syn::FnArg::Receiver(arg) => {
-                                if arg.reference.is_some() {
-                                    if arg.mutability.is_some() {
+                            syn::FnArg::Receiver(arg) => match &arg.kind {
+                                syn::ReceiverKind::Value => {
+                                    method_args.push(quote! {
+                                        self.into()
+                                    })
+                                },
+                                syn::ReceiverKind::Typed(_, _) => {
+                                    method_args.push(quote! {
+                                        (*self).into()
+                                    })
+                                },
+                                syn::ReceiverKind::Reference(_, _, mutability) => {
+                                    if mutability.is_some() {
                                         if type_info.reference.is_some() {
                                             method_args.push(quote! {
                                                 &mut **self
@@ -283,11 +293,8 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
                                             })
                                         }
                                     }
-                                } else {
-                                    method_args.push(quote! {
-                                        self.into()
-                                    })
-                                }
+                                },
+                                _ => return syn::Error::new(arg.self_token.span, "Unknown self kind").to_compile_error().into()
                             },
                             syn::FnArg::Typed(arg) => {
                                 let name = &arg.pat;
@@ -321,7 +328,7 @@ pub fn auto_trait(args: TokenStream, input: TokenStream) -> TokenStream {
                     let mut new_args = syn::punctuated::Punctuated::new();
                     new_args.insert(0, generate_self_trait_bound(type_info.ident, &trait_name));
                     new_args.insert(0, syn::GenericArgument::Lifetime(lifetime));
-                    while let Some(arg) = generics.args.pop() {
+                    while let Some(arg) = generics.args.pop_pair() {
                         new_args.push(arg.into_tuple().0);
                     }
                     generics.args = new_args;
